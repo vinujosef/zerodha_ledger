@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+pandas
+sqlalchemy
+psycopg2-binary
+python-multipart
+yfinance
+requests
+pytest
+openpyxl
