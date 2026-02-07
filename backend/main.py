@@ -125,6 +125,8 @@ async def ingest_preview(
                         sheet_name = data.get("sheet_name")
                         trade_date = data.get("trade_date")
                         contract_note_no = data.get("contract_note_no")
+                        if not contract_note_no:
+                            errors.append(f"{cf.filename} [{sheet_name or 'Sheet'}]: missing Contract Note No")
 
                         for t in data.get("trades", []):
                             contract_trade_rows.append({
@@ -150,6 +152,7 @@ async def ingest_preview(
                             "trade_date": trade_date.isoformat() if trade_date else None,
                             "pay_in_out_obligation": _clean_number(charges.get("pay_in_out_obligation")),
                             "taxable_value_of_supply": _clean_number(charges.get("taxable_value_of_supply")),
+                            "brokerage": _clean_number(charges.get("taxable_value_of_supply")),
                             "exchange_txn_charges": _clean_number(charges.get("exchange_txn_charges")),
                             "clearing_charges": _clean_number(charges.get("clearing_charges")),
                             "cgst": _clean_number(charges.get("cgst")),
@@ -157,6 +160,7 @@ async def ingest_preview(
                             "igst": _clean_number(charges.get("igst")),
                             "stt": _clean_number(charges.get("stt")),
                             "sebi_txn_tax": _clean_number(charges.get("sebi_txn_tax")),
+                            "sebi_turnover_fees": _clean_number(charges.get("sebi_txn_tax")),
                             "stamp_duty": _clean_number(charges.get("stamp_duty")),
                             "net_amount_receivable": _clean_number(charges.get("net_amount_receivable")),
                             "sheet_name": sheet_name,
@@ -311,14 +315,14 @@ def ingest_commit(payload: dict, db: Session = Depends(get_db)):
                 contract_note_no=row.get("contract_note_no"),
                 trade_date=pd.to_datetime(row["trade_date"]).date() if row.get("trade_date") else None,
                 pay_in_out_obligation=row.get("pay_in_out_obligation"),
-                taxable_value_of_supply=row.get("taxable_value_of_supply"),
+                taxable_value_of_supply=row.get("brokerage") if row.get("brokerage") is not None else row.get("taxable_value_of_supply"),
                 exchange_txn_charges=row.get("exchange_txn_charges"),
                 clearing_charges=row.get("clearing_charges"),
                 cgst=row.get("cgst"),
                 sgst=row.get("sgst"),
                 igst=row.get("igst"),
                 stt=row.get("stt"),
-                sebi_txn_tax=row.get("sebi_txn_tax"),
+                sebi_txn_tax=row.get("sebi_turnover_fees") if row.get("sebi_turnover_fees") is not None else row.get("sebi_txn_tax"),
                 stamp_duty=row.get("stamp_duty"),
                 net_amount_receivable=row.get("net_amount_receivable"),
                 sheet_name=row.get("sheet_name"),

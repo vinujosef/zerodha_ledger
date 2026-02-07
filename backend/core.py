@@ -44,6 +44,8 @@ def _find_date(df: pd.DataFrame):
     return None
 
 def _find_contract_note_no(df: pd.DataFrame):
+    # Prefer explicit Contract Note IDs like "CNT-25/26-176480604"
+    id_pattern = re.compile(r'\b[A-Z]{2,5}[-/]\d{2}/\d{2}[-/]\d+\b')
     for i in range(min(30, len(df))):
         row = df.iloc[i].tolist()
         row_str = " ".join([str(x) for x in row])
@@ -51,11 +53,49 @@ def _find_contract_note_no(df: pd.DataFrame):
             for j in range(len(row)):
                 cell = str(row[j])
                 if re.search(r'Contract\s*Note', cell, re.IGNORECASE):
+                    # First try: adjacent cells to the right for a proper ID pattern.
+                    for k in range(j + 1, len(row)):
+                        val = str(row[k]).strip()
+                        if not val or val.lower() == "nan":
+                            continue
+                        m = id_pattern.search(val)
+                        if m:
+                            return m.group(0)
+                    # Second try: any cell in the same row with a proper ID pattern.
+                    for k in range(len(row)):
+                        val = str(row[k]).strip()
+                        if not val or val.lower() == "nan":
+                            continue
+                        m = id_pattern.search(val)
+                        if m:
+                            return m.group(0)
+                    # Try extracting number from the same cell first.
+                    inline_match = re.search(
+                        r'contract\s*note(?:\s*(?:no\.?|number))?\s*[:\-]?\s*([A-Za-z0-9/-]+)',
+                        cell,
+                        re.IGNORECASE
+                    )
+                    if inline_match:
+                        val = inline_match.group(1).strip()
+                        if val and not re.match(r'\d{2}[-/]\d{2}[-/]\d{4}', val):
+                            return val
                     # Next non-empty cell is likely the number
                     for k in range(j + 1, len(row)):
                         val = str(row[k]).strip()
                         if val and val.lower() != "nan":
+                            if re.match(r'\d{2}[-/]\d{2}[-/]\d{4}', val):
+                                continue
                             return val
+    # Fallback: scan first 30 rows for a contract note ID pattern anywhere.
+    for i in range(min(30, len(df))):
+        row = df.iloc[i].tolist()
+        for cell in row:
+            val = str(cell).strip()
+            if not val or val.lower() == "nan":
+                continue
+            m = id_pattern.search(val)
+            if m:
+                return m.group(0)
     return None
 
 def _normalize_header(text):
