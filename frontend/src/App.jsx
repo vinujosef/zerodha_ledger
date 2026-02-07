@@ -157,17 +157,23 @@ function App() {
     .filter((r) => r.security_desc && toNumber(r.quantity) && toNumber(r.quantity) !== 0);
 
   const contractChargeRows = (preview?.contract_charge_rows_preview || []);
+  const normalizeNoteKey = (val) => {
+    if (!val) return "";
+    return String(val).replace(/\.(xlsx|xls|csv)$/i, "");
+  };
+  const chargeBrokerage = (charge) => (charge?.brokerage ?? charge?.taxable_value_of_supply);
+  const chargeSebiFees = (charge) => (charge?.sebi_turnover_fees ?? charge?.sebi_txn_tax);
   const extractSymbol = (desc) => {
     if (!desc) return "";
     const base = desc.split("-")[0];
     return base ? base.trim() : desc.trim();
   };
   const noteKeyForTrade = (t) => {
-    return t?.contract_note_no || t?.sheet_name || "—";
+    return normalizeNoteKey(t?.contract_note_no || t?.file_name || t?.sheet_name || "—");
   };
   const makeNoteDisplay = (noteKey, count) => {
     if (!noteKey || noteKey === "—") return "—";
-    if (count > 1) return `MULTI-${noteKey}`;
+    if (count > 1) return `${noteKey} (MULTI)`;
     return noteKey;
   };
   const noteColorClass = (noteKey) => {
@@ -286,13 +292,6 @@ function App() {
       const tb = tradebookByDateSymbol.get(`${d}::${symbol.toUpperCase()}`);
       const noteKey = noteKeyForTrade(trade);
       const count = tradeCountByNoteDate.get(`${noteKey}::${d}`) || 0;
-      const qty = toNumber(trade?.quantity);
-      const netTotal = toNumber(trade?.net_total);
-      const grossRate = toNumber(trade?.gross_rate);
-      let tradeValue = netTotal;
-      if ((tradeValue === null || Math.abs(tradeValue) < 0.0001) && qty !== null && grossRate !== null) {
-        tradeValue = qty * grossRate;
-      }
       return {
         date: d,
         trade,
@@ -300,7 +299,6 @@ function App() {
         fallbackSide: tb?.type || null,
         noteKey,
         noteDisplay: makeNoteDisplay(noteKey, count),
-        tradeValue,
       };
     });
   };
@@ -326,25 +324,25 @@ function App() {
 
   return (
     <div className="min-h-screen bg-slate-50">
-      <div className="max-w-7xl mx-auto px-6 py-10">
+      <div className="max-w-screen-2xl mx-auto px-4 py-10">
         <header className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
           <div>
             <p className="text-sm font-semibold uppercase tracking-widest text-slate-500">Zerodha Ledger</p>
             <h1 className="text-3xl font-semibold text-slate-900">My Investment Dashboard</h1>
-            <p className="text-sm text-slate-500 mt-2">Preview, verify, and track your portfolio growth.</p>
+            <p className="text-sm text-slate-500 mt-2">Preview, verify, and track portfolio growth</p>
           </div>
           <div className="flex gap-2">
-            <button
-              onClick={() => setView("import")}
-              className={`px-4 py-2 rounded-lg text-sm font-semibold ${view === 'import' ? 'bg-slate-900 text-white' : 'bg-white border border-slate-200 text-slate-600'}`}
-            >
-              Data Import
-            </button>
             <button
               onClick={() => setView("dashboard")}
               className={`px-4 py-2 rounded-lg text-sm font-semibold ${view === 'dashboard' ? 'bg-slate-900 text-white' : 'bg-white border border-slate-200 text-slate-600'}`}
             >
               Dashboard
+            </button>
+            <button
+              onClick={() => setView("import")}
+              className={`px-4 py-2 rounded-lg text-sm font-semibold ${view === 'import' ? 'bg-slate-900 text-white' : 'bg-white border border-slate-200 text-slate-600'}`}
+            >
+              Data Import
             </button>
           </div>
         </header>
@@ -401,15 +399,15 @@ function App() {
                     </div>
                     <div className="overflow-auto">
                       <table className="w-full text-sm">
-                        <thead className="text-xs uppercase tracking-widest text-slate-400 border-b">
+                        <thead className="text-[11px] md:text-xs font-semibold text-slate-600 border-b">
                           <tr>
-                            <th className="py-2 text-left">Contract Note</th>
-                            <th className="py-2 text-left">Symbol</th>
-                            <th className="py-2 text-left">Date</th>
-                            <th className="py-2 text-left">Buy/Sell</th>
-                            <th className="py-2 text-right">Qty</th>
-                            <th className="py-2 text-right">Trade Price</th>
-                            <th className="py-2 text-right">CN Price</th>
+                            <th className="py-2 text-center whitespace-normal break-words leading-tight">Contract Note</th>
+                            <th className="py-2 text-center whitespace-normal break-words leading-tight">Symbol</th>
+                            <th className="py-2 text-center whitespace-normal break-words leading-tight">Date</th>
+                            <th className="py-2 text-center whitespace-normal break-words leading-tight">Buy/Sell</th>
+                            <th className="py-2 text-center whitespace-normal break-words leading-tight">Qty</th>
+                            <th className="py-2 text-center whitespace-normal break-words leading-tight">Trade Price</th>
+                            <th className="py-2 text-center whitespace-normal break-words leading-tight">CN Price</th>
                           </tr>
                         </thead>
                         <tbody className="divide-y">
@@ -423,17 +421,17 @@ function App() {
                               const noteDisplay = makeNoteDisplay(matchNoteKey, countForNote);
                               return (
                               <tr key={`${t.trade_id}-${i}`} className="text-slate-700" style={noteBg ? { backgroundColor: noteBg } : undefined}>
-                                <td className="py-2 text-xs font-semibold">{noteDisplay}</td>
-                                <td className="py-2 font-medium">{t.symbol}</td>
-                                <td className="py-2">{t.date}</td>
-                                <td className={`py-2 text-xs uppercase tracking-wide ${t.type === 'BUY' ? 'text-sky-700' : 'text-amber-700'}`}>
+                                <td className="py-2 text-xs font-semibold text-center">{noteDisplay}</td>
+                                <td className="py-2 font-medium text-center">{t.symbol}</td>
+                                <td className="py-2 text-center">{t.date}</td>
+                                <td className={`py-2 text-xs uppercase tracking-wide text-center ${t.type === 'BUY' ? 'text-sky-700' : 'text-amber-700'}`}>
                                   {t.type === 'BUY' ? 'Buy' : 'Sell'}
                                 </td>
-                                <td className="py-2 text-right">{fmt(t.quantity)}</td>
-                                <td className={`py-2 text-right ${mismatch ? 'text-rose-600 font-semibold' : ''}`}>
+                                <td className="py-2 text-center">{fmt(t.quantity)}</td>
+                                <td className={`py-2 text-center ${mismatch ? 'text-rose-600 font-semibold' : ''}`}>
                                   {fmt(t.price)}
                                 </td>
-                                <td className={`py-2 text-right ${mismatch ? 'text-rose-600 font-semibold' : 'text-slate-600'}`}>
+                                <td className={`py-2 text-center ${mismatch ? 'text-rose-600 font-semibold' : 'text-slate-600'}`}>
                                   {cnPrice === null ? "—" : cnPrice.toFixed(4)}
                                 </td>
                               </tr>
@@ -454,43 +452,59 @@ function App() {
 
                     <div className="overflow-auto">
                       <table className="w-full text-sm">
-                        <thead className="text-xs uppercase tracking-widest text-slate-400 border-b">
+                        <thead className="text-xs font-semibold text-slate-600 border-b">
                           <tr>
-                            <th className="py-2 text-left">Contract Note</th>
-                            <th className="py-2 text-left">Date</th>
-                            <th className="py-2 text-left">Buy/Sell</th>
-                            <th className="py-2 text-right">Qty</th>
-                            <th className="py-2 text-right">Net Total</th>
-                            <th className="py-2 text-right">Taxable</th>
-                            <th className="py-2 text-right">STT</th>
-                            <th className="py-2 text-right">CGST</th>
-                            <th className="py-2 text-right">SGST</th>
-                            <th className="py-2 text-right">IGST</th>
-                            <th className="py-2 text-right">Exchange</th>
-                            <th className="py-2 text-right">SEBI</th>
-                            <th className="py-2 text-right">Stamp</th>
-                            <th className="py-2 text-right">Net Amount Receivable/Payable</th>
+                            <th className="py-2 text-center whitespace-normal break-words leading-tight">Contract Note</th>
+                            <th className="py-2 text-center whitespace-normal break-words leading-tight">Date</th>
+                            <th className="py-2 text-center whitespace-normal break-words leading-tight">
+                              <span className="block">Pay In /</span>
+                              <span className="block">Pay Out</span>
+                              <span className="block">Obligation</span>
+                            </th>
+                            <th className="py-2 text-center whitespace-normal break-words leading-tight">Brokerage</th>
+                            <th className="py-2 text-center whitespace-normal break-words leading-tight">
+                              <span className="block">Exchange</span>
+                              <span className="block">Transaction</span>
+                              <span className="block">Charges</span>
+                            </th>
+                            <th className="py-2 text-center whitespace-normal break-words leading-tight">
+                              <span className="block">Clearing</span>
+                              <span className="block">Charge</span>
+                            </th>
+                            <th className="py-2 text-center whitespace-normal break-words leading-tight">IGST</th>
+                            <th className="py-2 text-center whitespace-normal break-words leading-tight">CGST</th>
+                            <th className="py-2 text-center whitespace-normal break-words leading-tight">SGST</th>
+                            <th className="py-2 text-center whitespace-normal break-words leading-tight">
+                              <span className="block">SEBI</span>
+                              <span className="block">Turnover</span>
+                              <span className="block">Fees</span>
+                            </th>
+                            <th className="py-2 text-center whitespace-normal break-words leading-tight">
+                              <span className="block">Stamp</span>
+                              <span className="block">Duty</span>
+                            </th>
+                            <th className="py-2 text-center whitespace-normal break-words leading-tight">
+                              <span className="block">Net Amount</span>
+                              <span className="block">Receivable/</span>
+                              <span className="block">Payable</span>
+                            </th>
                           </tr>
                         </thead>
                         <tbody className="divide-y">
                           {buildContractRows().map((row, i) => (
                             <tr key={`${row.date}-${i}`} className="text-slate-700" style={assignNoteColor(row.noteKey) ? { backgroundColor: assignNoteColor(row.noteKey) } : undefined}>
-                              <td className="py-2 text-xs font-semibold">{row.noteDisplay}</td>
-                              <td className="py-2">{row.date}</td>
-                              <td className={`py-2 text-xs uppercase tracking-wide ${((row.trade?.side || row.fallbackSide) === 'BUY') ? 'text-sky-700' : 'text-amber-700'}`}>
-                                {((row.trade?.side || row.fallbackSide) === 'BUY') ? 'Buy' : ((row.trade?.side || row.fallbackSide) === 'SELL' ? 'Sell' : '—')}
-                              </td>
-                              <td className="py-2 text-right">{fmt(row.trade?.quantity)}</td>
-                              <td className="py-2 text-right">{fmt(row.tradeValue)}</td>
-                              <td className="py-2 text-right">{fmtCharge(row.charge?.taxable_value_of_supply)}</td>
-                              <td className="py-2 text-right">{fmtCharge(row.charge?.stt)}</td>
-                              <td className="py-2 text-right">{fmtCharge(row.charge?.cgst)}</td>
-                              <td className="py-2 text-right">{fmtCharge(row.charge?.sgst)}</td>
-                              <td className="py-2 text-right">{fmtCharge(row.charge?.igst)}</td>
-                              <td className="py-2 text-right">{fmtCharge(row.charge?.exchange_txn_charges)}</td>
-                              <td className="py-2 text-right">{fmtCharge(row.charge?.sebi_txn_tax)}</td>
-                              <td className="py-2 text-right">{fmtCharge(row.charge?.stamp_duty)}</td>
-                              <td className="py-2 text-right">{fmtCharge(row.charge?.net_amount_receivable)}</td>
+                              <td className="py-2 text-xs font-semibold text-center">{row.noteDisplay}</td>
+                              <td className="py-2 text-center">{row.date}</td>
+                              <td className="py-2 text-center">{fmtCharge(row.charge?.pay_in_out_obligation)}</td>
+                              <td className="py-2 text-center">{fmtCharge(chargeBrokerage(row.charge))}</td>
+                              <td className="py-2 text-center">{fmtCharge(row.charge?.exchange_txn_charges)}</td>
+                              <td className="py-2 text-center">{fmtCharge(row.charge?.clearing_charges)}</td>
+                              <td className="py-2 text-center">{fmtCharge(row.charge?.igst)}</td>
+                              <td className="py-2 text-center">{fmtCharge(row.charge?.cgst)}</td>
+                              <td className="py-2 text-center">{fmtCharge(row.charge?.sgst)}</td>
+                              <td className="py-2 text-center">{fmtCharge(chargeSebiFees(row.charge))}</td>
+                              <td className="py-2 text-center">{fmtCharge(row.charge?.stamp_duty)}</td>
+                              <td className="py-2 text-center">{fmtCharge(row.charge?.net_amount_receivable)}</td>
                             </tr>
                           ))}
                           {buildContractRows().length === 0 && (
