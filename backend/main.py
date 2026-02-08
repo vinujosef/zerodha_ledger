@@ -4,6 +4,8 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text
 import pandas as pd
 import yfinance as yf
+import logging
+import warnings
 from datetime import datetime, date
 import uuid
 import math
@@ -28,6 +30,11 @@ from core import (
 
 app = FastAPI()
 
+# Quiet noisy third-party logs/warnings (yfinance delisting/no-data chatter).
+logging.getLogger("yfinance").setLevel(logging.ERROR)
+warnings.filterwarnings("ignore", message=".*possibly delisted.*")
+warnings.filterwarnings("ignore", message=".*No data found.*")
+
 # Enable CORS for React Frontend
 app.add_middleware(
     CORSMiddleware,
@@ -46,6 +53,9 @@ def get_db():
         yield db
     finally:
         db.close()
+
+def _user_log(message: str):
+    print(f"🧾 {message}")
 
 # --- ENDPOINTS ---
 
@@ -147,7 +157,7 @@ async def ingest_preview(
                             })
 
                         charges = data.get("charges", {}) or {}
-                        contract_charge_rows.append({
+                        charge_row = {
                             "contract_note_no": contract_note_no,
                             "trade_date": trade_date.isoformat() if trade_date else None,
                             "pay_in_out_obligation": _clean_number(charges.get("pay_in_out_obligation")),
@@ -166,7 +176,31 @@ async def ingest_preview(
                             "sheet_name": sheet_name,
                             "file_name": cf.filename,
                             "debug": charges_debug,
-                        })
+                        }
+                        contract_charge_rows.append(charge_row)
+
+                        net_amount = charge_row.get("net_amount_receivable")
+                        if net_amount is not None:
+                            calc_total = (
+                                (charge_row.get("pay_in_out_obligation") or 0.0)
+                                + (charge_row.get("brokerage") or 0.0)
+                                + (charge_row.get("exchange_txn_charges") or 0.0)
+                                + (charge_row.get("clearing_charges") or 0.0)
+                                + (charge_row.get("cgst") or 0.0)
+                                + (charge_row.get("sgst") or 0.0)
+                                + (charge_row.get("igst") or 0.0)
+                                + (charge_row.get("stt") or 0.0)
+                                + (charge_row.get("sebi_turnover_fees") or charge_row.get("sebi_txn_tax") or 0.0)
+                                + (charge_row.get("stamp_duty") or 0.0)
+                            )
+                            if abs(calc_total - net_amount) > 0.01:
+                                note_label = contract_note_no or sheet_name or cf.filename
+                                _user_log(
+                                    "Charge calculation mismatch: "
+                                    f"{note_label} "
+                                    f"calc={calc_total:.4f} net={net_amount:.4f} "
+                                    f"diff={(calc_total - net_amount):.4f}"
+                                )
                 else:
                     errors.append(f"Could not parse {cf.filename} (Format issue?)")
             except Exception as e:
@@ -244,7 +278,7 @@ async def ingest_preview(
     except HTTPException as he:
         raise he
     except Exception as e:
-        print(f"Preview Error: {e}")
+        _user_log(f"Preview Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/ingest/commit")
@@ -361,7 +395,7 @@ def ingest_commit(payload: dict, db: Session = Depends(get_db)):
         raise he
     except Exception as e:
         db.rollback()
-        print(f"Commit Error: {e}")
+        _user_log(f"Commit Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/fy-list")
@@ -387,6 +421,42 @@ def _fy_start_date(fy: str):
 def _load_symbol_alias_map(db: Session):
     rows = db.query(SymbolAlias).filter(SymbolAlias.active == True).all()
     return {r.from_symbol: r.to_symbol for r in rows}
+
+def _resolve_latest_prices(symbols: list[str], alias_map: dict[str, str]):
+    if not symbols:
+        return {}, []
+    mapped = {s: alias_map.get(s, s) for s in symbols}
+    tickers = [mapped[s] + ".NS" for s in symbols]
+    live_prices = {}
+    missing_symbols = []
+
+    def _last_valid(series: pd.Series):
+        if series is None:
+            return None
+        series = series.dropna()
+        if series.empty:
+            return None
+        return series.iloc[-1]
+
+    data = yf.download(tickers, period="5d", progress=False)['Close']
+    if len(symbols) == 1:
+        series = data if isinstance(data, pd.Series) else data.iloc[:, 0]
+        val = _last_valid(series)
+        if val is not None and pd.notnull(val):
+            live_prices[symbols[0]] = val
+        else:
+            missing_symbols.append({"symbol": symbols[0], "attempted": mapped[symbols[0]]})
+    else:
+        for s in symbols:
+            col = mapped[s] + ".NS"
+            series = data[col] if col in data else None
+            val = _last_valid(series) if series is not None else None
+            if val is not None and pd.notnull(val):
+                live_prices[s] = val
+            else:
+                missing_symbols.append({"symbol": s, "attempted": mapped[s]})
+
+    return live_prices, missing_symbols
 
 @app.post("/symbols/aliases")
 def upsert_symbol_aliases(payload: dict, db: Session = Depends(get_db)):
@@ -448,26 +518,9 @@ def get_dashboard(fy: str, db: Session = Depends(get_db)):
         
         if active_symbols:
             try:
-                mapped = {s: alias_map.get(s, s) for s in active_symbols}
-                tickers = [mapped[s] + ".NS" for s in active_symbols]
-                data = yf.download(tickers, period="1d", progress=False)['Close']
-                
-                if len(active_symbols) == 1:
-                    val = data.iloc[-1].item() if not isinstance(data, pd.Series) else data.item()
-                    if pd.notnull(val):
-                        live_prices[active_symbols[0]] = val
-                    else:
-                        missing_symbols.append({"symbol": active_symbols[0], "attempted": mapped[active_symbols[0]]})
-                else:
-                    last_row = data.iloc[-1]
-                    for s in active_symbols:
-                        val = last_row.get(mapped[s] + ".NS")
-                        if pd.notnull(val):
-                            live_prices[s] = val
-                        else:
-                            missing_symbols.append({"symbol": s, "attempted": mapped[s]})
+                live_prices, missing_symbols = _resolve_latest_prices(active_symbols, alias_map)
             except Exception as e:
-                print(f"YFinance Error: {e}")
+                _user_log(f"YFinance Error: {e}")
                 missing_symbols = [{"symbol": s, "attempted": alias_map.get(s, s)} for s in active_symbols]
 
         # 5. Build Holdings Response
@@ -551,7 +604,7 @@ def get_dashboard(fy: str, db: Session = Depends(get_db)):
             "symbol_aliases": alias_map,
         }
     except Exception as e:
-        print(f"Portfolio Error: {e}")
+        _user_log(f"Portfolio Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/reports/summary")
@@ -572,19 +625,10 @@ def get_report_summary(db: Session = Depends(get_db)):
         live_prices = {}
         if active_symbols:
             try:
-                tickers = [s + ".NS" for s in active_symbols]
-                data = yf.download(tickers, period="1d", progress=False)['Close']
-                if len(active_symbols) == 1:
-                    val = data.iloc[-1].item()
-                    live_prices[active_symbols[0]] = val
-                else:
-                    last_row = data.iloc[-1]
-                    for s in active_symbols:
-                        val = last_row.get(s + ".NS")
-                        if pd.notnull(val):
-                            live_prices[s] = val
+                alias_map = _load_symbol_alias_map(db)
+                live_prices, _ = _resolve_latest_prices(active_symbols, alias_map)
             except Exception as e:
-                print(f"YFinance Error: {e}")
+                _user_log(f"YFinance Error: {e}")
 
         networth_by_fy = []
         for fy in fy_set:
@@ -628,7 +672,7 @@ def get_report_summary(db: Session = Depends(get_db)):
 
         return {"networth_by_fy": networth_by_fy, "charges_by_fy": charges_by_fy}
     except Exception as e:
-        print(f"Report Summary Error: {e}")
+        _user_log(f"Report Summary Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/reports/realized")
@@ -653,5 +697,5 @@ def get_report_realized(fy: str, db: Session = Depends(get_db)):
                 })
         return {"fy": fy, "rows": rows}
     except Exception as e:
-        print(f"Report Realized Error: {e}")
+        _user_log(f"Report Realized Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))

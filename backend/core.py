@@ -3,6 +3,9 @@ import io
 import re
 from datetime import date
 
+def _user_log(message: str):
+    print(f"🧾 {message}")
+
 def _normalize_cell(val):
     if pd.isna(val):
         return ""
@@ -233,7 +236,7 @@ def _parse_contract_note_df(df: pd.DataFrame, sheet_name: str):
 
     trade_date = _find_date(df)
     if not trade_date:
-        print(f"[parse_contract_note] Skipping sheet '{sheet_name}': could not detect trade date.")
+        _user_log(f"[parse_contract_note] Skipping sheet '{sheet_name}': could not detect trade date.")
         return None
 
     contract_note_no = _find_contract_note_no(df)
@@ -283,7 +286,7 @@ def _parse_contract_note_df(df: pd.DataFrame, sheet_name: str):
             trades.append(trade)
     else:
         warnings.append("Required trade table headers not found; sheet skipped.")
-        print(f"[parse_contract_note] Skipping sheet '{sheet_name}': required trade headers missing.")
+        _user_log(f"[parse_contract_note] Skipping sheet '{sheet_name}': required trade headers missing.")
         return None
 
     charges, charges_debug = _extract_charges_fixed(df)
@@ -329,12 +332,12 @@ def parse_contract_note(content: bytes):
                 parsed_rows.append(parsed)
 
         if not parsed_rows:
-            print("[parse_contract_note] No sheets matched the expected fixed schema.")
+            _user_log("[parse_contract_note] No sheets matched the expected fixed schema.")
             return []
 
         return parsed_rows
     except Exception as e:
-        print(f"Global Parsing Error: {e}")
+        _user_log(f"Global Parsing Error: {e}")
         return []
 
 def parse_tradebook(content: bytes):

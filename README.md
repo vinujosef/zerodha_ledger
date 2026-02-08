@@ -7,7 +7,7 @@ Track Zerodha equity trades with FIFO accounting, contract note reconciliation, 
 2. Run: `docker-compose up --build`
 3. Open: `http://localhost:3000`
 
-## What’s in the Current App
+## Features
 - **Preview → Commit ingestion:** Upload a Tradebook CSV plus multiple Contract Notes, review the preview, then commit.
 - **Contract note parsing (xlsx/csv):** Extract trades + charges, keep per-sheet diagnostics for tricky layouts.
 - **Mismatch detection:** Highlights when tradebook price diverges from contract note price beyond a threshold.
