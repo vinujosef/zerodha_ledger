@@ -400,7 +400,7 @@ def _apply_allocations(trades_df, notes_df):
     )
     return merged
 
-def calculate_fifo_holdings(trades_df, notes_df, up_to_date=None):
+def calculate_fifo_holdings(trades_df, notes_df, up_to_date=None, include_charges=False):
     """
     FIFO holdings from trades up to a given date (inclusive).
     Returns {symbol: [{'qty': float, 'price': float}, ...]}
@@ -412,7 +412,11 @@ def calculate_fifo_holdings(trades_df, notes_df, up_to_date=None):
     if up_to_date:
         df = df[df['date'] <= up_to_date]
 
-    merged = _apply_allocations(df, notes_df)
+    if include_charges:
+        merged = _apply_allocations(df, notes_df)
+    else:
+        merged = df.copy()
+        merged['net_price'] = merged['price']
 
     holdings = {}
     for _, row in merged.sort_values('date').iterrows():
@@ -435,7 +439,7 @@ def calculate_fifo_holdings(trades_df, notes_df, up_to_date=None):
 
     return holdings
 
-def calculate_realized_gains(trades_df, notes_df):
+def calculate_realized_gains(trades_df, notes_df, include_charges=False):
     """
     Returns list of realized gain records for each SELL trade using FIFO.
     Includes avg buy price for the matched lots.
@@ -443,7 +447,11 @@ def calculate_realized_gains(trades_df, notes_df):
     if trades_df.empty:
         return []
 
-    merged = _apply_allocations(trades_df, notes_df)
+    if include_charges:
+        merged = _apply_allocations(trades_df, notes_df)
+    else:
+        merged = trades_df.copy()
+        merged['net_price'] = merged['price']
     merged = merged.sort_values('date')
 
     lots = {}
