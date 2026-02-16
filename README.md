@@ -1,19 +1,23 @@
 # 📈 Zerodha Investment Ledger
 
-Track Zerodha equity trades with FIFO accounting, contract note reconciliation, and a clean FY dashboard.
+Track Zerodha equity trades with FIFO accounting, contract note reconciliation, and a clean FY dashboard that matches Zerodha-style average costs.
 
 ## Quick Start
 1. Ensure Docker Desktop is running.
 2. Run: `docker-compose up --build`
 3. Open: `http://localhost:3000`
 
+### Trade Import
+Use Zerodha Console links and upload files manually.
+
 ## Features
-- **Preview → Commit ingestion:** Upload a Tradebook CSV plus multiple Contract Notes, review the preview, then commit.
+- **Preview → Commit ingestion:** Upload Tradebook CSV + Contract Notes, review the preview, then commit.
 - **Contract note parsing (xlsx/csv):** Extract trades + charges, keep per-sheet diagnostics for tricky layouts.
 - **Mismatch detection:** Highlights when tradebook price diverges from contract note price beyond a threshold.
 - **Charges breakdown:** CGST/SGST/IGST, STT, SEBI, exchange charges, stamp duty, net payable.
 - **FY dashboards:** Net worth, YoY delta, realized P&L, and charts for net worth + charges by FY.
-- **Holdings + realized tables:** Live holdings with P&L, plus realized trades per FY.
+- **Holdings + realized tables:** Live holdings with P&L (sorted by P&L), plus realized trades per FY.
+- **Zerodha-style average cost:** Holdings and realized P&L exclude charges; charges remain reported separately.
 - **Symbol alias mapping:** Fix missing Yahoo Finance tickers (e.g., `HDFC` → `HDFCBANK`).
 
 ## Stack
@@ -24,7 +28,8 @@ Track Zerodha equity trades with FIFO accounting, contract note reconciliation, 
 
 ## Core Flow (UI)
 ### 1. Data Import
-- Upload Tradebook CSV + all Contract Notes
+- Upload Tradebook CSV
+- Upload all Contract Notes
 - Preview summary counts + warnings
 - Review tradebook rows alongside contract note prices
 - Review contract note charge rows
@@ -34,7 +39,7 @@ Track Zerodha equity trades with FIFO accounting, contract note reconciliation, 
 - FY selector
 - Current net worth + YoY change
 - Realized P&L for selected FY
-- Net worth by FY (chart)
+- Net worth by FY (line chart)
 - Charges by FY (chart)
 - Current holdings (live prices)
 - Past holdings (realized trades)

@@ -7,9 +7,11 @@ import yfinance as yf
 import logging
 import warnings
 import time
+import os
 from datetime import datetime, date
 import uuid
 import math
+from typing import Optional, List
 from database import (
     SessionLocal,
     init_db,
@@ -44,6 +46,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+def _user_log(message: str):
+    print(f"🧾 {message}")
+
 @app.on_event("startup")
 def on_startup():
     init_db()
@@ -67,12 +72,16 @@ _PRICE_CACHE_TTL_SEC = 600
 @app.post("/ingest/preview")
 async def ingest_preview(
     tradebook: UploadFile = File(...),
-    contracts: list[UploadFile] = File(...),
+    contracts: Optional[List[UploadFile]] = File(None),
     db: Session = Depends(get_db)
 ):
     try:
         # 1) Parse contract notes
         errors = []
+        if not contracts:
+            errors.append(
+                "Tradebook uploaded without contract notes. Charges cannot be computed correctly because tradebook does not contain detailed charge data."
+            )
         note_map = {}
         contract_trade_rows = []
         contract_charge_rows = []
@@ -92,7 +101,7 @@ async def ingest_preview(
                 return 0.0 if default_zero else None
             return f_val
 
-        for cf in contracts:
+        for cf in (contracts or []):
             try:
                 content = await cf.read()
                 parsed_list = parse_contract_note(content)
@@ -211,7 +220,7 @@ async def ingest_preview(
             except Exception as e:
                 errors.append(f"Error reading {cf.filename}: {str(e)}")
 
-        # 2) Parse tradebook
+        # 2) Parse tradebook (required)
         tb_content = await tradebook.read()
         try:
             trades_df = parse_tradebook(tb_content)
@@ -262,7 +271,7 @@ async def ingest_preview(
             created_at=datetime.utcnow(),
             is_committed=False,
             tradebook_filename=tradebook.filename,
-            contract_filenames=[c.filename for c in contracts],
+            contract_filenames=[c.filename for c in (contracts or [])],
             trade_rows=trade_rows,
             contract_rows=contract_rows,
             contract_trade_rows=contract_trade_rows,
