@@ -400,7 +400,70 @@ def _apply_allocations(trades_df, notes_df):
     )
     return merged
 
-def calculate_fifo_holdings(trades_df, notes_df, up_to_date=None, include_charges=False):
+def _prepare_split_actions(corporate_actions_df, up_to_date=None):
+    if corporate_actions_df is None or corporate_actions_df.empty:
+        return {}
+
+    df = corporate_actions_df.copy()
+    if "active" in df.columns:
+        df = df[df["active"] != False]
+
+    if "action_type" in df.columns:
+        df["action_type"] = df["action_type"].astype(str).str.upper()
+        df = df[df["action_type"] == "SPLIT"]
+
+    if "symbol" not in df.columns or "effective_date" not in df.columns:
+        return {}
+
+    df["symbol"] = df["symbol"].astype(str).str.upper()
+    df["effective_date"] = pd.to_datetime(df["effective_date"], errors="coerce").dt.date
+    df = df[df["effective_date"].notna()]
+
+    if up_to_date is None:
+        up_to_date = date.today()
+    df = df[df["effective_date"] <= up_to_date]
+
+    if "ratio_from" not in df.columns:
+        df["ratio_from"] = None
+    if "ratio_to" not in df.columns:
+        df["ratio_to"] = None
+
+    actions = {}
+    for _, row in df.iterrows():
+        r_from = row.get("ratio_from")
+        r_to = row.get("ratio_to")
+        if r_from is None or r_to is None:
+            continue
+        try:
+            r_from = float(r_from)
+            r_to = float(r_to)
+        except Exception:
+            continue
+        if r_from <= 0 or r_to <= 0:
+            continue
+        factor = r_to / r_from
+        symbol = row["symbol"]
+        actions.setdefault(symbol, []).append((row["effective_date"], factor))
+
+    for symbol in actions:
+        actions[symbol].sort(key=lambda x: x[0])
+    return actions
+
+def _apply_splits_to_lots(lots, split_actions, split_cursor, symbol, as_of_date):
+    if symbol not in split_actions:
+        return
+    actions = split_actions[symbol]
+    idx = split_cursor.get(symbol, 0)
+    while idx < len(actions) and actions[idx][0] <= as_of_date:
+        _, factor = actions[idx]
+        if factor > 0:
+            for lot in lots.get(symbol, []):
+                lot["qty"] *= factor
+                lot["price"] /= factor
+        idx += 1
+    split_cursor[symbol] = idx
+
+def calculate_fifo_holdings(trades_df, notes_df, up_to_date=None, include_charges=False, corporate_actions_df=None):
     """
     FIFO holdings from trades up to a given date (inclusive).
     Returns {symbol: [{'qty': float, 'price': float}, ...]}
@@ -419,10 +482,14 @@ def calculate_fifo_holdings(trades_df, notes_df, up_to_date=None, include_charge
         merged['net_price'] = merged['price']
 
     holdings = {}
+    split_actions = _prepare_split_actions(corporate_actions_df, up_to_date=up_to_date)
+    split_cursor = {}
+
     for _, row in merged.sort_values('date').iterrows():
         sym = row['symbol']
         if sym not in holdings:
             holdings[sym] = []
+        _apply_splits_to_lots(holdings, split_actions, split_cursor, sym, row['date'])
 
         if row['type'] == 'BUY':
             holdings[sym].append({'qty': row['quantity'], 'price': row['net_price']})
@@ -437,9 +504,15 @@ def calculate_fifo_holdings(trades_df, notes_df, up_to_date=None, include_charge
                     qty_to_sell -= batch['qty']
                     holdings[sym].pop(0)
 
+    # Apply remaining split actions up to cutoff date even if no later trades occurred.
+    # This is required for current holdings when no trade exists after the split date.
+    cutoff_date = up_to_date or date.today()
+    for sym in holdings.keys():
+        _apply_splits_to_lots(holdings, split_actions, split_cursor, sym, cutoff_date)
+
     return holdings
 
-def calculate_realized_gains(trades_df, notes_df, include_charges=False):
+def calculate_realized_gains(trades_df, notes_df, include_charges=False, corporate_actions_df=None):
     """
     Returns list of realized gain records for each SELL trade using FIFO.
     Includes avg buy price for the matched lots.
@@ -455,12 +528,15 @@ def calculate_realized_gains(trades_df, notes_df, include_charges=False):
     merged = merged.sort_values('date')
 
     lots = {}
+    split_actions = _prepare_split_actions(corporate_actions_df, up_to_date=None)
+    split_cursor = {}
     realized = []
 
     for _, row in merged.iterrows():
         sym = row['symbol']
         if sym not in lots:
             lots[sym] = []
+        _apply_splits_to_lots(lots, split_actions, split_cursor, sym, row['date'])
 
         if row['type'] == 'BUY':
             lots[sym].append({'qty': row['quantity'], 'price': row['net_price']})

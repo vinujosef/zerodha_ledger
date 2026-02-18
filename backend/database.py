@@ -101,5 +101,19 @@ class SymbolAlias(Base):
     to_symbol = Column(String, index=True)
     active = Column(Boolean, default=True)
 
+class CorporateAction(Base):
+    __tablename__ = "corporate_actions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    symbol = Column(String, index=True, nullable=False)
+    action_type = Column(String, index=True, nullable=False)  # SPLIT, BONUS, MERGER, etc.
+    effective_date = Column(Date, index=True, nullable=False)
+    ratio_from = Column(Float, nullable=True)
+    ratio_to = Column(Float, nullable=True)
+    source = Column(String, nullable=True)  # NSE, BSE
+    source_ref = Column(String, nullable=True)
+    fetched_at = Column(DateTime, nullable=True)
+    active = Column(Boolean, default=True)
+
 def init_db():
     Base.metadata.create_all(bind=engine)

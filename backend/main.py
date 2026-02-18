@@ -21,6 +21,7 @@ from database import (
     ContractNoteTrade,
     ContractNoteCharge,
     SymbolAlias,
+    CorporateAction,
 )
 from core import (
     parse_contract_note,
@@ -47,7 +48,7 @@ app.add_middleware(
 )
 
 def _user_log(message: str):
-    print(f"🧾 {message}")
+    print(f"🧾 {message}", flush=True)
 
 @app.on_event("startup")
 def on_startup():
@@ -66,6 +67,235 @@ def get_db():
 # Keyed by the requested symbols + their mapped tickers to stay consistent.
 _PRICE_CACHE = {}
 _PRICE_CACHE_TTL_SEC = 600
+
+def _fetch_yfinance_split_actions(symbol: str, start_date: date, end_date: date):
+    actions = []
+    errors = []
+
+    for suffix in [".NS", ".BO"]:
+        ticker = f"{symbol}{suffix}"
+        try:
+            t = yf.Ticker(ticker)
+            splits = t.splits
+            if splits is None or len(splits) == 0:
+                continue
+            for ts, ratio in splits.items():
+                eff_date = pd.to_datetime(ts, errors="coerce").date()
+                if eff_date is None or pd.isna(eff_date):
+                    continue
+                if eff_date < start_date or eff_date > end_date:
+                    continue
+                try:
+                    ratio_val = float(ratio)
+                except Exception:
+                    continue
+                if ratio_val <= 0 or abs(ratio_val - 1.0) < 1e-9:
+                    continue
+                actions.append({
+                    "symbol": symbol,
+                    "action_type": "SPLIT",
+                    "effective_date": eff_date,
+                    "ratio_from": 1.0,
+                    "ratio_to": ratio_val,
+                    "source": "YFINANCE",
+                    "source_ref": ticker,
+                })
+        except Exception as e:
+            errors.append(f"YFinance fetch failed for {ticker}: {str(e)}")
+
+    # Deduplicate by (date, ratio) across NS/BO.
+    uniq = {}
+    for a in actions:
+        key = (a["effective_date"], a["ratio_from"], a["ratio_to"])
+        if key not in uniq:
+            uniq[key] = a
+    return list(uniq.values()), (None if not errors else "; ".join(errors[:4]))
+
+def _sync_corporate_actions_for_symbols(db: Session, symbols: list[str], start_dates_by_symbol: dict[str, date]):
+    synced = 0
+    per_symbol = []
+    warnings = []
+    end_date = date.today()
+
+    for symbol in sorted(set(symbols)):
+        start_date = start_dates_by_symbol.get(symbol)
+        if not start_date:
+            _user_log(f"[CorpSync] {symbol}: skipped (no start date)")
+            per_symbol.append({"symbol": symbol, "added": 0})
+            continue
+
+        yf_actions, yf_err = _fetch_yfinance_split_actions(symbol, start_date, end_date)
+        _user_log(
+            f"[CorpSync] {symbol}: range={start_date.isoformat()}..{end_date.isoformat()} "
+            f"YF={len(yf_actions)}"
+        )
+        if yf_err:
+            _user_log(f"[CorpSync] {symbol}: YF error: {yf_err}")
+            warnings.append(yf_err)
+
+        actions = yf_actions
+        added = 0
+        for a in actions:
+            existing = db.query(CorporateAction).filter(
+                CorporateAction.symbol == a["symbol"],
+                CorporateAction.action_type == a["action_type"],
+                CorporateAction.effective_date == a["effective_date"],
+                CorporateAction.ratio_from == a["ratio_from"],
+                CorporateAction.ratio_to == a["ratio_to"],
+                CorporateAction.active == True,
+            ).first()
+            if existing:
+                existing.source = a.get("source") or existing.source
+                existing.source_ref = a.get("source_ref") or existing.source_ref
+                existing.fetched_at = datetime.utcnow()
+            else:
+                db.add(CorporateAction(
+                    symbol=a["symbol"],
+                    action_type=a["action_type"],
+                    effective_date=a["effective_date"],
+                    ratio_from=a["ratio_from"],
+                    ratio_to=a["ratio_to"],
+                    source=a.get("source"),
+                    source_ref=a.get("source_ref"),
+                    fetched_at=datetime.utcnow(),
+                    active=True,
+                ))
+                added += 1
+        synced += added
+        _user_log(f"[CorpSync] {symbol}: added_or_updated={added}")
+        per_symbol.append({"symbol": symbol, "added": added})
+
+    db.commit()
+    _user_log(f"[CorpSync] done symbols={len(set(symbols))} total_added={synced}")
+    return {
+        "symbols_checked": len(set(symbols)),
+        "actions_added": synced,
+        "per_symbol": per_symbol,
+        "warnings": warnings[:20],
+    }
+
+def _load_corporate_actions_df(db: Session):
+    return pd.read_sql(
+        db.query(CorporateAction).filter(CorporateAction.active == True).statement,
+        db.bind
+    )
+
+def _to_fifo_trade_df(trades_df: pd.DataFrame):
+    if trades_df is None or trades_df.empty:
+        return pd.DataFrame(columns=["symbol", "date", "type", "quantity", "price"])
+    df = trades_df.copy()
+    if "date" not in df.columns and "trade_date" in df.columns:
+        df["date"] = pd.to_datetime(df["trade_date"]).dt.date
+    elif "date" in df.columns:
+        df["date"] = pd.to_datetime(df["date"]).dt.date
+    if "type" not in df.columns and "trade_type" in df.columns:
+        df["type"] = df["trade_type"]
+    cols = ["symbol", "date", "type", "quantity", "price"]
+    for c in cols:
+        if c not in df.columns:
+            df[c] = None
+    return df[cols].copy()
+
+def _log_split_impacts_for_preview(fifo_trades_df: pd.DataFrame, corporate_actions_df: pd.DataFrame):
+    if fifo_trades_df is None or fifo_trades_df.empty:
+        _user_log("[SplitCheck] No trades in preview.")
+        return []
+    if corporate_actions_df is None or corporate_actions_df.empty:
+        _user_log("[SplitCheck] No corporate actions available in DB.")
+        return []
+
+    actions_df = corporate_actions_df.copy()
+    actions_df["action_type"] = actions_df["action_type"].astype(str).str.upper()
+    actions_df = actions_df[actions_df["action_type"] == "SPLIT"]
+    if actions_df.empty:
+        _user_log("[SplitCheck] No split actions available in DB.")
+        return []
+
+    actions_df["effective_date"] = pd.to_datetime(actions_df["effective_date"], errors="coerce").dt.date
+    actions_df = actions_df[actions_df["effective_date"].notna()]
+    actions_df["symbol"] = actions_df["symbol"].astype(str).str.upper()
+
+    buys = fifo_trades_df[fifo_trades_df["type"].astype(str).str.upper() == "BUY"].copy()
+    if buys.empty:
+        _user_log("[SplitCheck] No BUY rows in preview.")
+        return []
+
+    buys["symbol"] = buys["symbol"].astype(str).str.upper()
+    buys["date"] = pd.to_datetime(buys["date"], errors="coerce").dt.date
+    first_buy_by_symbol = buys.groupby("symbol")["date"].min().to_dict()
+
+    _user_log("[SplitCheck] ----- Split Impact Check (Preview) -----")
+    empty_notes_df = pd.DataFrame(columns=["date"])
+    any_logged = False
+    impact_rows = []
+
+    for symbol in sorted(first_buy_by_symbol.keys()):
+        first_buy_date = first_buy_by_symbol[symbol]
+        symbol_actions = actions_df[
+            (actions_df["symbol"] == symbol) &
+            (actions_df["effective_date"] >= first_buy_date)
+        ].sort_values("effective_date")
+
+        if symbol_actions.empty:
+            _user_log(f"[SplitCheck] {symbol} first_buy={first_buy_date.isoformat()} split_count=0")
+            continue
+
+        symbol_trades = fifo_trades_df[fifo_trades_df["symbol"].astype(str).str.upper() == symbol].copy()
+        if symbol_trades.empty:
+            continue
+
+        _user_log(f"[SplitCheck] {symbol} first_buy={first_buy_date.isoformat()} split_count={len(symbol_actions)}")
+        for _, action in symbol_actions.iterrows():
+            eff = action["effective_date"]
+            r_from = action.get("ratio_from")
+            r_to = action.get("ratio_to")
+            if r_from is None or r_to is None:
+                _user_log(f"[SplitCheck]   {symbol} split={eff.isoformat()} ratio=unknown (skipped)")
+                continue
+            try:
+                r_from = float(r_from)
+                r_to = float(r_to)
+            except Exception:
+                _user_log(f"[SplitCheck]   {symbol} split={eff.isoformat()} ratio_invalid={r_from}:{r_to} (skipped)")
+                continue
+            if r_from <= 0 or r_to <= 0:
+                _user_log(f"[SplitCheck]   {symbol} split={eff.isoformat()} ratio_non_positive={r_from}:{r_to} (skipped)")
+                continue
+
+            prior_actions = symbol_actions[symbol_actions["effective_date"] < eff]
+            holdings_before = calculate_fifo_holdings(
+                symbol_trades,
+                empty_notes_df,
+                up_to_date=eff,
+                corporate_actions_df=prior_actions,
+            )
+            lots = holdings_before.get(symbol, [])
+            qty_before = float(sum(l.get("qty", 0.0) for l in lots))
+            factor = r_to / r_from
+            qty_after = qty_before * factor
+            delta = qty_after - qty_before
+            _user_log(
+                f"[SplitCheck]   split={eff.isoformat()} ratio={r_from:g}:{r_to:g} "
+                f"affected_qty={qty_before:.4f} -> {qty_after:.4f} (delta={delta:+.4f})"
+            )
+            impact_rows.append({
+                "symbol": symbol,
+                "first_buy_date": first_buy_date.isoformat(),
+                "split_date": eff.isoformat(),
+                "ratio_from": r_from,
+                "ratio_to": r_to,
+                "qty_before": round(qty_before, 4),
+                "qty_after": round(qty_after, 4),
+                "delta_qty": round(delta, 4),
+                "source": action.get("source"),
+                "source_ref": action.get("source_ref"),
+            })
+            any_logged = True
+
+    if not any_logged:
+        _user_log("[SplitCheck] No splits found after first BUY date for preview symbols.")
+    _user_log("[SplitCheck] ----------------------------------------")
+    return impact_rows
 
 # --- ENDPOINTS ---
 
@@ -249,6 +479,28 @@ async def ingest_preview(
         if dropped_rows > 0:
             errors.append(f"Skipped {dropped_rows} duplicate trade rows by trade_id from uploaded tradebook files.")
 
+        alias_map = _load_symbol_alias_map(db)
+        symbol_buy_start_dates = {}
+        buy_df = trades_df[trades_df["trade_type"] == "BUY"]
+        if not buy_df.empty:
+            for symbol, grp in buy_df.groupby("symbol"):
+                norm_symbol = _resolve_alias_symbol(symbol, alias_map)
+                min_date = grp["trade_date"].min()
+                if norm_symbol not in symbol_buy_start_dates or min_date < symbol_buy_start_dates[norm_symbol]:
+                    symbol_buy_start_dates[norm_symbol] = min_date
+
+        corp_sync = _sync_corporate_actions_for_symbols(
+            db=db,
+            symbols=list(symbol_buy_start_dates.keys()),
+            start_dates_by_symbol=symbol_buy_start_dates,
+        )
+        preview_fifo_df = _to_fifo_trade_df(trades_df)
+        preview_fifo_df = _apply_aliases_to_trades_df(preview_fifo_df, alias_map)
+        corporate_actions_df = _load_corporate_actions_df(db)
+        split_impact_rows = _log_split_impacts_for_preview(preview_fifo_df, corporate_actions_df)
+        if corp_sync.get("warnings"):
+            errors.extend(corp_sync["warnings"])
+
         # 3) Prepare JSON payloads
         trade_rows = []
         for _, row in trades_df.iterrows():
@@ -284,6 +536,8 @@ async def ingest_preview(
             "contract_trade_rows_count": len(contract_trade_rows),
             "contract_charge_rows_count": len(contract_charge_rows),
             "parsed_sheets_count": len(contract_charge_rows),
+            "corporate_actions_sync": corp_sync,
+            "split_impact_count": len(split_impact_rows),
             "missing_contract_note_dates": missing_dates,
             "warnings": errors,
         }
@@ -307,10 +561,11 @@ async def ingest_preview(
         return {
             "staging_id": batch_id,
             "summary": summary,
-            "trade_rows_preview": trade_rows[:50],
-            "contract_rows_preview": contract_rows[:50],
-            "contract_trade_rows_preview": contract_trade_rows[:50],
-            "contract_charge_rows_preview": contract_charge_rows[:50],
+            "trade_rows_preview": trade_rows,
+            "contract_rows_preview": contract_rows,
+            "contract_trade_rows_preview": contract_trade_rows,
+            "contract_charge_rows_preview": contract_charge_rows,
+            "split_impact_rows_preview": split_impact_rows[:200],
         }
     except HTTPException as he:
         raise he
@@ -556,6 +811,7 @@ def get_dashboard(fy: str, db: Session = Depends(get_db)):
         # 1. Load Data
         trades_df = pd.read_sql(db.query(Trade).statement, db.bind)
         notes_df = pd.read_sql(db.query(ContractNote).statement, db.bind)
+        corporate_actions_df = _load_corporate_actions_df(db)
         alias_map = _load_symbol_alias_map(db)
         trades_df = _apply_aliases_to_trades_df(trades_df, alias_map)
 
@@ -577,7 +833,7 @@ def get_dashboard(fy: str, db: Session = Depends(get_db)):
         missing_dates = sorted([str(d) for d in unique_trade_dates if d not in unique_note_dates])
 
         # 3. Logic
-        holdings_dict = calculate_fifo_holdings(trades_df, notes_df)
+        holdings_dict = calculate_fifo_holdings(trades_df, notes_df, corporate_actions_df=corporate_actions_df)
 
         # 4. Live Data
         active_symbols = [s for s, batches in holdings_dict.items() if sum(b['qty'] for b in batches) > 0.01]
@@ -611,7 +867,7 @@ def get_dashboard(fy: str, db: Session = Depends(get_db)):
                 })
 
         # 6. FY Summary (Realized P&L)
-        realized = calculate_realized_gains(trades_df, notes_df)
+        realized = calculate_realized_gains(trades_df, notes_df, corporate_actions_df=corporate_actions_df)
         unmatched_sells = detect_unmatched_sells(trades_df)
         realized_total = 0.0
         for row in realized:
@@ -635,8 +891,8 @@ def get_dashboard(fy: str, db: Session = Depends(get_db)):
         fy_end = _fy_end_date(fy)
         prev_fy_end = date(fy_end.year - 1, 3, 31)
 
-        holdings_fy = calculate_fifo_holdings(trades_df, notes_df, up_to_date=fy_end)
-        holdings_prev = calculate_fifo_holdings(trades_df, notes_df, up_to_date=prev_fy_end)
+        holdings_fy = calculate_fifo_holdings(trades_df, notes_df, up_to_date=fy_end, corporate_actions_df=corporate_actions_df)
+        holdings_prev = calculate_fifo_holdings(trades_df, notes_df, up_to_date=prev_fy_end, corporate_actions_df=corporate_actions_df)
 
         def _value(holdings_map):
             total = 0.0
@@ -680,6 +936,7 @@ def get_report_summary(db: Session = Depends(get_db)):
         trades_df = pd.read_sql(db.query(Trade).statement, db.bind)
         charges_df = pd.read_sql(db.query(ContractNoteCharge).statement, db.bind)
         notes_df = pd.read_sql(db.query(ContractNote).statement, db.bind)
+        corporate_actions_df = _load_corporate_actions_df(db)
         alias_map = _load_symbol_alias_map(db)
         trades_df = _apply_aliases_to_trades_df(trades_df, alias_map)
 
@@ -689,7 +946,7 @@ def get_report_summary(db: Session = Depends(get_db)):
         fy_set = sorted({fy_label(d) for d in trades_df['date']})
 
         # Live prices for current holdings symbols
-        holdings_dict = calculate_fifo_holdings(trades_df, notes_df)
+        holdings_dict = calculate_fifo_holdings(trades_df, notes_df, corporate_actions_df=corporate_actions_df)
         active_symbols = [s for s, batches in holdings_dict.items() if sum(b['qty'] for b in batches) > 0.01]
         live_prices = {}
         if active_symbols:
@@ -701,7 +958,7 @@ def get_report_summary(db: Session = Depends(get_db)):
         networth_by_fy = []
         for fy in fy_set:
             fy_end = _fy_end_date(fy)
-            holdings_fy = calculate_fifo_holdings(trades_df, notes_df, up_to_date=fy_end)
+            holdings_fy = calculate_fifo_holdings(trades_df, notes_df, up_to_date=fy_end, corporate_actions_df=corporate_actions_df)
             total = 0.0
             for sym, batches in holdings_fy.items():
                 qty = sum(b['qty'] for b in batches)
@@ -748,12 +1005,13 @@ def get_report_realized(fy: str, db: Session = Depends(get_db)):
     try:
         trades_df = pd.read_sql(db.query(Trade).statement, db.bind)
         notes_df = pd.read_sql(db.query(ContractNote).statement, db.bind)
+        corporate_actions_df = _load_corporate_actions_df(db)
         alias_map = _load_symbol_alias_map(db)
         trades_df = _apply_aliases_to_trades_df(trades_df, alias_map)
         if trades_df.empty:
             return {"fy": fy, "rows": []}
 
-        realized = calculate_realized_gains(trades_df, notes_df)
+        realized = calculate_realized_gains(trades_df, notes_df, corporate_actions_df=corporate_actions_df)
         rows = []
         for r in realized:
             if fy_label(r["sell_date"]) == fy:
