@@ -12,6 +12,8 @@ function DataImportView({
   setContractFiles,
 }) {
   const [showSummaryModal, setShowSummaryModal] = React.useState(false);
+  const [needsReviewOnly, setNeedsReviewOnly] = React.useState(false);
+  const [selectedLinkId, setSelectedLinkId] = React.useState(null);
   const tradebookInputRef = React.useRef(null);
   const contractInputRef = React.useRef(null);
   const fmt = (val) => formatIN(val, { min: 2, max: 2 });
@@ -21,10 +23,8 @@ function DataImportView({
     return formatIN(n, { min: 2, max: 2 });
   };
 
-  const contractTradeRows = (preview?.contract_trade_rows_preview || [])
-    .filter((r) => r.security_desc && toNumber(r.quantity) && toNumber(r.quantity) !== 0);
-
   const contractChargeRows = preview?.contract_charge_rows_preview || [];
+  const splitImpactRows = preview?.split_impact_rows_preview || [];
   const selectedTradeFiles = tradeFiles ? Array.from(tradeFiles) : [];
   const selectedContractFiles = contractFiles ? Array.from(contractFiles) : [];
 
@@ -34,45 +34,6 @@ function DataImportView({
   };
 
   const noteKeyForTrade = (t) => normalizeNoteKey(t?.contract_note_no || t?.file_name || t?.sheet_name || '—');
-
-  const makeNoteDisplay = (noteKey, count) => {
-    if (!noteKey || noteKey === '—') return '—';
-    if (count > 1) return `${noteKey} (MULTI)`;
-    return noteKey;
-  };
-
-  const chargeBrokerage = (charge) => charge?.brokerage ?? charge?.taxable_value_of_supply;
-  const chargeSebiFees = (charge) => charge?.sebi_turnover_fees ?? charge?.sebi_txn_tax;
-
-  const extractSymbol = (desc) => {
-    if (!desc) return '';
-    const base = desc.split('-')[0];
-    return base ? base.trim() : desc.trim();
-  };
-
-  const tradeCountByNoteDate = new Map();
-  for (const t of contractTradeRows) {
-    const noteKey = noteKeyForTrade(t);
-    const key = `${noteKey}::${t.trade_date}`;
-    tradeCountByNoteDate.set(key, (tradeCountByNoteDate.get(key) || 0) + 1);
-  }
-
-  const notePalette = [
-    '#f8fafc', '#eff6ff', '#fef3c7', '#ecfdf3', '#ffe4e6', '#eef2ff', '#f0fdfa', '#fff7ed',
-    '#fdf2f8', '#f1f5f9', '#e0f2fe', '#fef9c3', '#ecfccb', '#fae8ff', '#fee2e2', '#e0f2f1',
-    '#ede9fe', '#f5f5f4', '#fef2f2', '#f8f8f8',
-  ];
-  const noteColorMap = new Map();
-  let noteColorIndex = 0;
-  const assignNoteColor = (key) => {
-    if (!key || key === '—') return null;
-    if (!noteColorMap.has(key)) {
-      const color = notePalette[noteColorIndex] || `hsl(${(noteColorIndex * 137.508) % 360} 70% 96%)`;
-      noteColorMap.set(key, color);
-      noteColorIndex += 1;
-    }
-    return noteColorMap.get(key);
-  };
 
   const findContractMatch = (trade) => {
     if (!preview?.contract_trade_rows_preview?.length) return null;
@@ -94,47 +55,6 @@ function DataImportView({
     return matches[0];
   };
 
-  const noteKeys = new Set();
-  for (const t of contractTradeRows) noteKeys.add(noteKeyForTrade(t));
-  for (const t of preview?.trade_rows_preview || []) noteKeys.add(noteKeyForTrade(findContractMatch(t)));
-  for (const key of noteKeys) assignNoteColor(key);
-
-  const buildContractRows = () => {
-    const tradebookByDateSymbol = new Map();
-    for (const t of preview?.trade_rows_preview || []) {
-      const key = `${t.date}::${(t.symbol || '').toUpperCase()}`;
-      if (!tradebookByDateSymbol.has(key)) tradebookByDateSymbol.set(key, t);
-    }
-
-    const tradeByDate = new Map();
-    for (const t of contractTradeRows) {
-      if (!tradeByDate.has(t.trade_date)) tradeByDate.set(t.trade_date, t);
-    }
-
-    const chargeByDate = new Map();
-    for (const c of contractChargeRows) {
-      if (!chargeByDate.has(c.trade_date)) chargeByDate.set(c.trade_date, c);
-    }
-
-    const dates = Array.from(new Set([...tradeByDate.keys(), ...chargeByDate.keys()])).sort();
-    return dates.map((d) => {
-      const trade = tradeByDate.get(d);
-      const charge = chargeByDate.get(d);
-      const symbol = extractSymbol(trade?.security_desc || '');
-      const tb = tradebookByDateSymbol.get(`${d}::${symbol.toUpperCase()}`);
-      const noteKey = noteKeyForTrade(trade);
-      const count = tradeCountByNoteDate.get(`${noteKey}::${d}`) || 0;
-      return {
-        date: d,
-        trade,
-        charge,
-        fallbackSide: tb?.type || null,
-        noteKey,
-        noteDisplay: makeNoteDisplay(noteKey, count),
-      };
-    });
-  };
-
   const calcContractPrice = (match) => {
     if (!match) return null;
     const grossRate = toNumber(match.gross_rate);
@@ -152,6 +72,186 @@ function DataImportView({
     const threshold = Math.max(0.1, tPrice * 0.001);
     return diff > threshold;
   };
+
+  const splitBySymbol = React.useMemo(() => {
+    const map = new Map();
+    for (const row of splitImpactRows) {
+      const symbol = String(row.symbol || '').toUpperCase();
+      if (!symbol) continue;
+      if (!map.has(symbol)) map.set(symbol, []);
+      map.get(symbol).push(row);
+    }
+    for (const [symbol, rows] of map.entries()) {
+      rows.sort((a, b) => String(a.split_date).localeCompare(String(b.split_date)));
+      map.set(symbol, rows);
+    }
+    return map;
+  }, [splitImpactRows]);
+
+  const noteCountByNoteDate = React.useMemo(() => {
+    const map = new Map();
+    for (const t of (preview?.contract_trade_rows_preview || [])) {
+      const note = noteKeyForTrade(t) || '—';
+      const key = `${note}::${t.trade_date || '—'}`;
+      map.set(key, (map.get(key) || 0) + 1);
+    }
+    return map;
+  }, [preview]);
+
+  const dailyContractByDate = React.useMemo(() => {
+    const map = new Map();
+    for (const row of (preview?.contract_rows_preview || [])) {
+      map.set(row.date, row);
+    }
+    return map;
+  }, [preview]);
+
+  const chargesByDate = React.useMemo(() => {
+    const map = new Map();
+    for (const row of contractChargeRows) {
+      if (!map.has(row.trade_date)) map.set(row.trade_date, row);
+    }
+    return map;
+  }, [contractChargeRows]);
+
+  const correlationRows = React.useMemo(() => {
+    return (preview?.trade_rows_preview || []).map((trade, index) => {
+      const match = findContractMatch(trade);
+      const cnPrice = calcContractPrice(match);
+      const tbQty = toNumber(trade.quantity);
+      const cnQty = toNumber(match?.quantity);
+      const qtyDiff = tbQty !== null && cnQty !== null ? tbQty - cnQty : null;
+      const priceDiff = toNumber(trade.price) !== null && cnPrice !== null ? toNumber(trade.price) - cnPrice : null;
+      const qtyMismatch = qtyDiff !== null && Math.abs(qtyDiff) >= 0.001;
+      const priceMismatch = isMismatch(trade, cnPrice);
+      const symbol = String(trade.symbol || '').toUpperCase();
+      const splitEvents = (splitBySymbol.get(symbol) || []).filter((s) => String(s.split_date) >= String(trade.date));
+      let status = 'OK';
+      let reason = 'Tradebook and Contract Note are aligned.';
+      if (!match) {
+        status = 'No CN';
+        reason = 'No contract-note row matched this tradebook entry.';
+      } else if (qtyMismatch || priceMismatch) {
+        status = 'Review';
+        if (qtyMismatch && priceMismatch) reason = 'Both quantity and price differ from Contract Note.';
+        else if (qtyMismatch) reason = 'Quantity differs from Contract Note.';
+        else reason = 'Price differs from Contract Note.';
+      }
+      return {
+        linkId: `L-${index + 1}`,
+        trade,
+        match,
+        cnPrice,
+        qtyDiff,
+        priceDiff,
+        status,
+        reason,
+        splitEvents,
+        charge: chargesByDate.get(trade.date) || null,
+        exchange: (match?.exchange || '').toUpperCase() || '—',
+      };
+    });
+  }, [preview, splitBySymbol, chargesByDate]);
+
+  const displayedRows = React.useMemo(() => {
+    if (!needsReviewOnly) return correlationRows;
+    return correlationRows.filter((r) => r.status !== 'OK');
+  }, [needsReviewOnly, correlationRows]);
+
+  const issuesCount = React.useMemo(() => correlationRows.filter((r) => r.status !== 'OK').length, [correlationRows]);
+
+  const selectedRow = React.useMemo(
+    () => displayedRows.find((r) => r.linkId === selectedLinkId) || displayedRows[0] || null,
+    [displayedRows, selectedLinkId]
+  );
+
+  const selectedTradebookContractId = React.useMemo(() => {
+    if (!selectedRow) return '—';
+    const note = noteKeyForTrade(selectedRow.match) || '—';
+    const key = `${note}::${selectedRow.trade.date}`;
+    const count = noteCountByNoteDate.get(key) || 0;
+    return count > 1 && note !== '—' ? `${note} (MULTI)` : note;
+  }, [selectedRow, noteCountByNoteDate]);
+
+  const selectedContractRows = React.useMemo(() => {
+    if (!selectedRow) return [];
+    const dayRows = (preview?.contract_trade_rows_preview || []).filter((r) => r.trade_date === selectedRow.trade.date);
+    const byNote = new Map();
+    for (const r of dayRows) {
+      const note = noteKeyForTrade(r) || '—';
+      const key = `${note}::${r.trade_date || '—'}`;
+      const cnt = noteCountByNoteDate.get(key) || 0;
+      const display = cnt > 1 && note !== '—' ? `${note} (MULTI)` : note;
+      if (!byNote.has(display)) byNote.set(display, { contract_note: display });
+    }
+    const dayTotals = dailyContractByDate.get(selectedRow.trade.date) || null;
+    const c = selectedRow.charge || {};
+    const netAmount = toNumber(c.net_amount_receivable);
+    const netText = netAmount === null
+      ? '—'
+      : `${fmtCharge(Math.abs(netAmount))} ${netAmount >= 0 ? '(Received)' : '(Spent)'}`;
+    return Array.from(byNote.values()).map((x) => ({
+      ...x,
+      brokerage: c.brokerage ?? c.taxable_value_of_supply ?? dayTotals?.total_brokerage ?? null,
+      exchange_txn_charges: c.exchange_txn_charges ?? null,
+      clearing_charges: c.clearing_charges ?? null,
+      cgst: c.cgst ?? null,
+      sgst: c.sgst ?? null,
+      igst: c.igst ?? null,
+      stt: c.stt ?? null,
+      sebi_turnover_fees: c.sebi_turnover_fees ?? c.sebi_txn_tax ?? null,
+      stamp_duty: c.stamp_duty ?? null,
+      net_total_text: netText,
+    }));
+  }, [selectedRow, preview, noteCountByNoteDate, dailyContractByDate]);
+
+  const selectedTradeSplitRows = React.useMemo(() => {
+    if (!selectedRow) return [];
+    const baseQty = toNumber(selectedRow.trade.quantity);
+    if (baseQty === null || baseQty <= 0) return [];
+    const symbol = String(selectedRow.trade.symbol || '').toUpperCase();
+    const splitEvents = (splitBySymbol.get(symbol) || []).filter((s) => String(s.split_date) >= String(selectedRow.trade.date));
+    if (!splitEvents.length) return [];
+
+    let runningQty = baseQty;
+    return splitEvents
+      .slice()
+      .sort((a, b) => String(a.split_date).localeCompare(String(b.split_date)))
+      .map((s) => {
+        const rFrom = toNumber(s.ratio_from);
+        const rTo = toNumber(s.ratio_to);
+        if (rFrom === null || rTo === null || rFrom <= 0 || rTo <= 0) {
+          return {
+            split_date: s.split_date,
+            ratio_from: s.ratio_from,
+            ratio_to: s.ratio_to,
+            affected_qty: null,
+            became_qty: null,
+          };
+        }
+        const factor = rTo / rFrom;
+        const affectedQty = runningQty;
+        const becameQty = affectedQty * factor;
+        runningQty = becameQty;
+        return {
+          split_date: s.split_date,
+          ratio_from: rFrom,
+          ratio_to: rTo,
+          affected_qty: affectedQty,
+          became_qty: becameQty,
+        };
+      });
+  }, [selectedRow, splitBySymbol]);
+
+  React.useEffect(() => {
+    if (!selectedRow) {
+      setSelectedLinkId(null);
+      return;
+    }
+    if (selectedLinkId !== selectedRow.linkId) {
+      setSelectedLinkId(selectedRow.linkId);
+    }
+  }, [selectedRow, selectedLinkId]);
 
   React.useEffect(() => {
     setShowSummaryModal(Boolean(preview));
@@ -173,12 +273,6 @@ function DataImportView({
               </button>
             </div>
             <div className="mt-4 overflow-y-auto pr-1 space-y-6">
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 text-sm text-slate-700">
-                <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">Trades: <strong>{preview.summary.trades_count}</strong></div>
-                <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">Contract Notes: <strong>{preview.summary.contract_notes_count}</strong></div>
-                <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">CN Trades: <strong>{preview.summary.contract_trade_rows_count}</strong></div>
-                <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">Charge Rows: <strong>{preview.summary.contract_charge_rows_count}</strong></div>
-              </div>
               {preview.summary.missing_contract_note_dates.length > 0 && (
                 <div className="rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
                   Missing notes for {preview.summary.missing_contract_note_dates.length} trade dates.
@@ -191,109 +285,202 @@ function DataImportView({
               )}
 
               <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-                <div className="flex items-center justify-between mb-4">
-                  <h4 className="text-sm font-semibold text-slate-900">Tradebook Details</h4>
+                <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                  <h4 className="text-sm font-semibold text-slate-900">Imported Trades</h4>
+                  <div className="flex flex-wrap items-center gap-3 text-xs text-slate-600">
+                    <span>Rows shown: <strong>{displayedRows.length}</strong></span>
+                    <span>Issues: <strong>{issuesCount}</strong></span>
+                    <label className="inline-flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={needsReviewOnly}
+                        onChange={(e) => setNeedsReviewOnly(e.target.checked)}
+                      />
+                      Needs review only
+                    </label>
+                  </div>
                 </div>
-                <div className="overflow-auto">
-                  <table className="w-full text-sm">
-                    <thead className="text-[11px] md:text-xs font-semibold text-slate-600 border-b">
-                      <tr>
-                        <th className="py-2 text-center whitespace-normal break-words leading-tight">Contract Note</th>
-                        <th className="py-2 text-center whitespace-normal break-words leading-tight">Symbol</th>
-                        <th className="py-2 text-center whitespace-normal break-words leading-tight">Date</th>
-                        <th className="py-2 text-center whitespace-normal break-words leading-tight">Buy/Sell</th>
-                        <th className="py-2 text-center whitespace-normal break-words leading-tight">Qty</th>
-                        <th className="py-2 text-center whitespace-normal break-words leading-tight">Trade Price</th>
-                        <th className="py-2 text-center whitespace-normal break-words leading-tight">CN Price</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y">
-                      {preview.trade_rows_preview.map((t, i) => {
-                        const match = findContractMatch(t);
-                        const cnPrice = calcContractPrice(match);
-                        const mismatch = isMismatch(t, cnPrice);
-                        const matchNoteKey = noteKeyForTrade(match);
-                        const noteBg = assignNoteColor(matchNoteKey);
-                        const countForNote = tradeCountByNoteDate.get(`${matchNoteKey}::${t.date}`) || 0;
-                        const noteDisplay = makeNoteDisplay(matchNoteKey, countForNote);
-                        return (
-                          <tr key={`${t.trade_id}-${i}`} className="text-slate-700" style={noteBg ? { backgroundColor: noteBg } : undefined}>
-                            <td className="py-2 text-xs font-semibold text-center">{noteDisplay}</td>
-                            <td className="py-2 font-medium text-center">{t.symbol}</td>
-                            <td className="py-2 text-center">{t.date}</td>
-                            <td className={`py-2 text-xs uppercase tracking-wide text-center ${t.type === 'BUY' ? 'text-sky-700' : 'text-amber-700'}`}>
-                              {t.type === 'BUY' ? 'Buy' : 'Sell'}
-                            </td>
-                            <td className="py-2 text-center">{fmt(t.quantity)}</td>
-                            <td className={`py-2 text-center ${mismatch ? 'text-rose-600 font-semibold' : ''}`}>{fmt(t.price)}</td>
-                            <td className={`py-2 text-center ${mismatch ? 'text-rose-600 font-semibold' : 'text-slate-600'}`}>
-                              {cnPrice === null ? '—' : cnPrice.toFixed(4)}
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                  <p className="text-xs text-slate-400 mt-2">
-                    Mismatch highlights only when the difference exceeds 0.1 or 0.1% of price (whichever is higher).
-                  </p>
-                </div>
-              </div>
-
-              <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-                <div className="flex items-center justify-between mb-4">
-                  <h4 className="text-sm font-semibold text-slate-900">Contract Details</h4>
-                </div>
-                <div className="overflow-auto">
+                <div className="mt-4 overflow-auto">
                   <table className="w-full text-sm">
                     <thead className="text-xs font-semibold text-slate-600 border-b">
                       <tr>
-                        <th className="py-2 text-center whitespace-normal break-words leading-tight">Contract Note</th>
-                        <th className="py-2 text-center whitespace-normal break-words leading-tight">Date</th>
-                        <th className="py-2 text-center whitespace-normal break-words leading-tight">Pay In / Pay Out Obligation</th>
-                        <th className="py-2 text-center whitespace-normal break-words leading-tight">Brokerage</th>
-                        <th className="py-2 text-center whitespace-normal break-words leading-tight">Exchange Transaction Charges</th>
-                        <th className="py-2 text-center whitespace-normal break-words leading-tight">Clearing Charge</th>
-                        <th className="py-2 text-center whitespace-normal break-words leading-tight">IGST</th>
-                        <th className="py-2 text-center whitespace-normal break-words leading-tight">CGST</th>
-                        <th className="py-2 text-center whitespace-normal break-words leading-tight">SGST</th>
-                        <th className="py-2 text-center whitespace-normal break-words leading-tight">SEBI Turnover Fees</th>
-                        <th className="py-2 text-center whitespace-normal break-words leading-tight">Stamp Duty</th>
-                        <th className="py-2 text-center whitespace-normal break-words leading-tight">Net Amount Receivable/Payable</th>
+                        <th className="py-2 text-center">
+                          <span className="group relative inline-flex items-center gap-1">
+                            Status
+                            <span
+                              className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-slate-300 text-[10px] text-slate-500"
+                            >
+                              i
+                            </span>
+                            <span className="pointer-events-none absolute left-1/2 top-full z-10 mt-1 hidden -translate-x-1/2 whitespace-nowrap rounded-md border border-slate-200 bg-white px-2 py-1 text-[10px] font-medium text-slate-600 shadow group-hover:block">
+                              OK = matched, Review = qty/price differs, No CN = no contract note match
+                            </span>
+                          </span>
+                        </th>
+                        <th className="py-2 text-center">Symbol</th>
+                        <th className="py-2 text-center">Date</th>
+                        <th className="py-2 text-center">NSE/BSE</th>
+                        <th className="py-2 text-center">Type</th>
+                        <th className="py-2 text-center">Qty</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y">
-                      {buildContractRows().map((row, i) => (
-                        <tr key={`${row.date}-${i}`} className="text-slate-700" style={assignNoteColor(row.noteKey) ? { backgroundColor: assignNoteColor(row.noteKey) } : undefined}>
-                          <td className="py-2 text-xs font-semibold text-center">{row.noteDisplay}</td>
-                          <td className="py-2 text-center">{row.date}</td>
-                          <td className="py-2 text-center">{fmtCharge(row.charge?.pay_in_out_obligation)}</td>
-                          <td className="py-2 text-center">{fmtCharge(chargeBrokerage(row.charge))}</td>
-                          <td className="py-2 text-center">{fmtCharge(row.charge?.exchange_txn_charges)}</td>
-                          <td className="py-2 text-center">{fmtCharge(row.charge?.clearing_charges)}</td>
-                          <td className="py-2 text-center">{fmtCharge(row.charge?.igst)}</td>
-                          <td className="py-2 text-center">{fmtCharge(row.charge?.cgst)}</td>
-                          <td className="py-2 text-center">{fmtCharge(row.charge?.sgst)}</td>
-                          <td className="py-2 text-center">{fmtCharge(chargeSebiFees(row.charge))}</td>
-                          <td className="py-2 text-center">{fmtCharge(row.charge?.stamp_duty)}</td>
-                          <td className="py-2 text-center">{fmtCharge(row.charge?.net_amount_receivable)}</td>
-                        </tr>
-                      ))}
-                      {buildContractRows().length === 0 && (
+                      {displayedRows.map((row) => {
+                        const isSelected = selectedRow?.linkId === row.linkId;
+                        const statusClass = row.status === 'OK'
+                          ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                          : row.status === 'No CN'
+                            ? 'bg-rose-50 text-rose-700 border-rose-200'
+                            : 'bg-amber-50 text-amber-700 border-amber-200';
+                        return (
+                          <tr
+                            key={row.linkId}
+                            className={`cursor-pointer text-slate-700 ${isSelected ? 'bg-slate-100' : 'hover:bg-slate-50'}`}
+                            onClick={() => setSelectedLinkId(row.linkId)}
+                          >
+                            <td className="py-2 text-center">
+                              <span className={`inline-block rounded-md border px-2 py-1 text-xs font-semibold ${statusClass}`}>
+                                {row.status}
+                              </span>
+                            </td>
+                            <td className="py-2 text-center font-semibold">{row.trade.symbol}</td>
+                            <td className="py-2 text-center">{row.trade.date}</td>
+                            <td className="py-2 text-center">{row.exchange}</td>
+                            <td className="py-2 text-center">{row.trade.type}</td>
+                            <td className="py-2 text-center">{fmt(row.trade.quantity)}</td>
+                          </tr>
+                        );
+                      })}
+                      {displayedRows.length === 0 && (
                         <tr>
-                          <td className="py-3 text-sm text-slate-400" colSpan="13">No contract note rows detected.</td>
+                          <td className="py-3 text-sm text-slate-400" colSpan="6">No rows to display for current filter.</td>
                         </tr>
                       )}
                     </tbody>
                   </table>
                 </div>
-                {contractChargeRows.length > 0 && contractChargeRows.every((c) => !Object.values(c).some((v) => typeof v === 'number')) && (
-                  <div className="mt-4 text-xs text-slate-500">
-                    Charges are still empty. Debug info per sheet:
-                    <pre className="mt-2 bg-slate-50 border border-slate-200 rounded p-2 overflow-auto">
-                      {JSON.stringify(contractChargeRows.map((c) => c.debug), null, 2)}
-                    </pre>
+              </div>
+
+              <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+                <div className="flex items-center justify-between mb-4">
+                  <h4 className="text-sm font-semibold text-slate-900">Detail Panel</h4>
+                  <span className="text-xs text-slate-500">{selectedRow ? selectedRow.linkId : 'No selection'}</span>
+                </div>
+                {selectedRow ? (
+                  <div className="space-y-4">
+                    <div className="rounded-lg border border-sky-200 bg-sky-50 p-4">
+                      <div className="text-xs font-semibold text-sky-800">Tradebook</div>
+                      <div className="mt-2 overflow-auto">
+                        <table className="w-full text-sm">
+                          <thead className="text-xs font-semibold text-slate-600 border-b">
+                            <tr>
+                              <th className="py-2 text-center">Contract Note ID</th>
+                              <th className="py-2 text-center">Trade ID</th>
+                              <th className="py-2 text-center">Trade Date</th>
+                              <th className="py-2 text-center">Exchange</th>
+                              <th className="py-2 text-center">Segment</th>
+                              <th className="py-2 text-center">Type</th>
+                              <th className="py-2 text-center">Qty</th>
+                              <th className="py-2 text-center">Price</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            <tr className="text-slate-700">
+                              <td className="py-2 text-center">{selectedTradebookContractId}</td>
+                              <td className="py-2 text-center">{selectedRow.trade.trade_id}</td>
+                              <td className="py-2 text-center">{selectedRow.trade.date}</td>
+                              <td className="py-2 text-center">{selectedRow.exchange || '—'}</td>
+                              <td className="py-2 text-center">—</td>
+                              <td className="py-2 text-center">{selectedRow.trade.type}</td>
+                              <td className="py-2 text-center">{fmt(selectedRow.trade.quantity)}</td>
+                              <td className="py-2 text-center">{fmt(selectedRow.trade.price)}</td>
+                            </tr>
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+
+                    <div className="rounded-lg border border-amber-200 bg-amber-50 p-4">
+                      <div className="text-xs font-semibold text-amber-800">Contract Note</div>
+                      <div className="mt-2 overflow-auto">
+                        <table className="w-full text-sm">
+                          <thead className="text-xs font-semibold text-slate-600 border-b">
+                            <tr>
+                              <th className="py-2 text-center">Contract Note ID</th>
+                              <th className="py-2 text-center">Brokerage</th>
+                              <th className="py-2 text-center">Exchange Txn Charges</th>
+                              <th className="py-2 text-center">Clearing Charges</th>
+                              <th className="py-2 text-center">CGST</th>
+                              <th className="py-2 text-center">SGST</th>
+                              <th className="py-2 text-center">IGST</th>
+                              <th className="py-2 text-center">STT</th>
+                              <th className="py-2 text-center">SEBI Turnover Fees</th>
+                              <th className="py-2 text-center">Stamp Duty</th>
+                              <th className="py-2 text-center">Net Total</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {selectedContractRows.length > 0 ? (
+                              selectedContractRows.map((r, idx) => (
+                                <tr key={`${selectedRow.linkId}-cn-${idx}`} className="text-slate-700">
+                                  <td className="py-2 text-center">{r.contract_note}</td>
+                                  <td className="py-2 text-center">{fmtCharge(r.brokerage)}</td>
+                                  <td className="py-2 text-center">{fmtCharge(r.exchange_txn_charges)}</td>
+                                  <td className="py-2 text-center">{fmtCharge(r.clearing_charges)}</td>
+                                  <td className="py-2 text-center">{fmtCharge(r.cgst)}</td>
+                                  <td className="py-2 text-center">{fmtCharge(r.sgst)}</td>
+                                  <td className="py-2 text-center">{fmtCharge(r.igst)}</td>
+                                  <td className="py-2 text-center">{fmtCharge(r.stt)}</td>
+                                  <td className="py-2 text-center">{fmtCharge(r.sebi_turnover_fees)}</td>
+                                  <td className="py-2 text-center">{fmtCharge(r.stamp_duty)}</td>
+                                  <td className="py-2 text-center">{r.net_total_text}</td>
+                                </tr>
+                              ))
+                            ) : (
+                              <tr>
+                                <td className="py-3 text-sm text-rose-700 text-center" colSpan="11">No contract-note match found for this trade date.</td>
+                              </tr>
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+
+                    <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-4">
+                      <div className="text-xs font-semibold text-emerald-800">Split Check</div>
+                      <div className="mt-2 overflow-auto">
+                        <table className="w-full text-sm">
+                          <thead className="text-xs font-semibold text-slate-600 border-b">
+                            <tr>
+                              <th className="py-2 text-center">Split Date</th>
+                              <th className="py-2 text-center">Ratio</th>
+                              <th className="py-2 text-center">Affected Quantity</th>
+                              <th className="py-2 text-center">Became Quantity</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {selectedTradeSplitRows.length > 0 ? (
+                              selectedTradeSplitRows.map((s, idx) => (
+                                <tr key={`${selectedRow.linkId}-split-${idx}`} className="text-slate-700">
+                                  <td className="py-2 text-center">{s.split_date}</td>
+                                  <td className="py-2 text-center">{`${s.ratio_from}:${s.ratio_to}`}</td>
+                                  <td className="py-2 text-center">{s.affected_qty === null ? '—' : fmt(s.affected_qty)}</td>
+                                  <td className="py-2 text-center">{s.became_qty === null ? '—' : fmt(s.became_qty)}</td>
+                                </tr>
+                              ))
+                            ) : (
+                              <tr>
+                                <td className="py-3 text-sm text-slate-500 text-center" colSpan="4">No split event found after first buy date for this symbol.</td>
+                              </tr>
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                    <div className="text-xs text-slate-500">{selectedRow.reason}</div>
                   </div>
+                ) : (
+                  <div className="text-sm text-slate-500">No trade selected.</div>
                 )}
               </div>
             </div>
