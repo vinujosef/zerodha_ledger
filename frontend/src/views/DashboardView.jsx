@@ -42,6 +42,7 @@ function SearchInput({ value, onChange, ariaLabel }) {
 }
 
 function DashboardView({
+  dashboardSection,
   data,
   summary,
   realized,
@@ -72,32 +73,25 @@ function DashboardView({
   const chargesScale = chargesUnit === 'lakhs' ? 100000 : 1000;
   const formatChargesAxis = (val) => formatIN(Math.abs(Number(val) || 0) / chargesScale);
 
-  const totals = (data.holdings || []).reduce(
-    (acc, h) => {
-      acc.invested += Number(h.invested_val || 0);
-      acc.current += Number(h.current_val || 0);
-      return acc;
-    },
-    { invested: 0, current: 0 },
-  );
-  const totalPnl = totals.current - totals.invested;
-  const totalPnlPct = totals.invested > 0 ? (totalPnl / totals.invested) * 100 : 0;
-
   const holdingsQuery = holdingsSearch.trim().toUpperCase();
   const realizedQuery = realizedSearch.trim().toUpperCase();
+  const showNetWorth = dashboardSection === 'net-worth';
+  const showCharges = dashboardSection === 'charges';
+  const showCurrentHoldings = dashboardSection === 'current-holdings';
+  const showPastHolding = dashboardSection === 'past-holding';
 
   return (
-    <div className="mt-8 space-y-6">
-      {data.data_warnings?.unmatched_sells?.length > 0 && (
-        <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-900">
-          <div className="font-semibold">Potentially incorrect realized values detected</div>
-          <div className="text-xs text-rose-700 mt-1">
+    <div className="dashboard-surface mt-2 space-y-5">
+      {showPastHolding && data.data_warnings?.unmatched_sells?.length > 0 && (
+        <div className="surface-block p-4 text-sm text-slate-700">
+          <div className="font-semibold text-slate-900">Potentially incorrect realized values detected</div>
+          <div className="text-xs text-slate-600 mt-1">
             Some SELL trades do not have enough prior BUY history in the ledger. Until those BUY trades are imported,
             avg buy, sell price adjustments, and realized P&L may be inaccurate.
           </div>
           <div className="mt-3 overflow-auto">
             <table className="w-full text-xs">
-              <thead className="text-rose-700 uppercase tracking-wide">
+              <thead className="text-slate-600 uppercase tracking-wide">
                 <tr>
                   <th className="text-left py-1">Symbol</th>
                   <th className="text-left py-1">Sell Date</th>
@@ -120,28 +114,8 @@ function DashboardView({
         </div>
       )}
 
-      <div className="rounded-2xl bg-white shadow-sm border border-slate-200 p-6">
-        <div className="grid grid-cols-1 gap-6 md:grid-cols-3">
-          <div className="text-center">
-            <div className="text-xs uppercase tracking-widest text-slate-400">Total Invested</div>
-            <div className="text-2xl font-semibold text-slate-900 mt-2">₹{formatIN(totals.invested)}</div>
-          </div>
-          <div className="text-center">
-            <div className="text-xs uppercase tracking-widest text-slate-400">Current Value</div>
-            <div className="text-2xl font-semibold text-slate-900 mt-2">₹{formatIN(totals.current)}</div>
-          </div>
-          <div className="text-center">
-            <div className="text-xs uppercase tracking-widest text-slate-400">Total P&L</div>
-            <div className={`text-2xl font-semibold mt-2 ${totalPnl >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
-              {totalPnl >= 0 ? '+' : ''}₹{formatIN(totalPnl)}
-              <span className="text-xs text-slate-500 ml-2">({totalPnl >= 0 ? '+' : ''}{totalPnlPct.toFixed(2)}%)</span>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-        <div className="rounded-2xl bg-white border border-slate-200 shadow-sm p-6 h-[400px]">
+      {showNetWorth && (
+        <div id="dashboard-net-worth" className="surface-block p-6 h-[430px]">
           <div className="text-sm font-semibold text-slate-900 mb-3">{networthTitle}</div>
           <ResponsiveContainer>
             <LineChart data={summary.networth_by_fy} margin={{ top: 24, right: 30, bottom: 46 }}>
@@ -155,8 +129,10 @@ function DashboardView({
             </LineChart>
           </ResponsiveContainer>
         </div>
+      )}
 
-        <div className="rounded-2xl bg-white border border-slate-200 shadow-sm p-6 h-[400px]">
+      {showCharges && (
+        <div id="dashboard-charges" className="surface-block p-6 h-[430px]">
           <div className="text-sm font-semibold text-slate-900 mb-3">Charges Paid by Financial Year</div>
           <ResponsiveContainer>
             <BarChart data={chargesChart} margin={{ top: 24, right: 30, left: 24, bottom: 46 }}>
@@ -182,9 +158,10 @@ function DashboardView({
             </BarChart>
           </ResponsiveContainer>
         </div>
-      </div>
+      )}
 
-      <div className="rounded-2xl bg-white border border-slate-200 shadow-sm overflow-hidden">
+      {showCurrentHoldings && (
+        <div id="dashboard-current-holdings" className="surface-block overflow-hidden">
         <div className="px-4 py-3 border-b flex items-center justify-between gap-4">
           <div className="text-sm font-semibold text-slate-900">Current Holdings</div>
           <SearchInput value={holdingsSearch} onChange={(e) => setHoldingsSearch(e.target.value)} ariaLabel="Search current holdings by symbol" />
@@ -223,9 +200,11 @@ function DashboardView({
               })}
           </tbody>
         </table>
-      </div>
+        </div>
+      )}
 
-      <div className="rounded-2xl bg-white border border-slate-200 shadow-sm overflow-hidden">
+      {showPastHolding && (
+        <div id="dashboard-past-holding" className="surface-block overflow-hidden">
         <div className="px-4 py-3 border-b flex items-center justify-between gap-4">
           <div className="text-sm font-semibold text-slate-900">Past Holdings (Realized)</div>
           <SearchInput value={realizedSearch} onChange={(e) => setRealizedSearch(e.target.value)} ariaLabel="Search past holdings by symbol" />
@@ -263,21 +242,22 @@ function DashboardView({
             )}
           </tbody>
         </table>
-      </div>
+        </div>
+      )}
 
-      {data.missing_symbols?.length > 0 && (
-        <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
-          <div className="font-semibold">Price symbols not found</div>
-          <div className="text-xs text-amber-800 mt-1">
+      {showCurrentHoldings && data.missing_symbols?.length > 0 && (
+        <div className="surface-block p-4 text-sm text-slate-800">
+          <div className="font-semibold text-slate-900">Price symbols not found</div>
+          <div className="text-xs text-slate-600 mt-1">
             These symbols could not be resolved on Yahoo Finance. Map them to their current ticker (without .NS).
           </div>
           <div className="mt-3 space-y-2">
             {data.missing_symbols.map((item) => (
               <div key={`${item.symbol}-${item.attempted}`} className="flex items-center gap-3">
                 <div className="text-xs font-semibold w-32">{item.symbol}</div>
-                <div className="text-xs text-amber-700 w-40">Attempted: {item.attempted}</div>
+                <div className="text-xs text-slate-600 w-40">Attempted: {item.attempted}</div>
                 <input
-                  className="flex-1 rounded-lg border border-amber-200 bg-white px-3 py-1 text-sm"
+                  className="flex-1 rounded-lg border border-slate-300 bg-white/80 px-3 py-1 text-sm"
                   placeholder={`New ticker for ${item.symbol}`}
                   value={aliasEdits[item.symbol] ?? data.symbol_aliases?.[item.symbol] ?? ''}
                   onChange={(e) => {
@@ -290,7 +270,7 @@ function DashboardView({
           </div>
           <div className="mt-3 flex items-center gap-3">
             <button
-              className="px-4 py-2 rounded-lg text-sm font-semibold bg-amber-600 text-white hover:bg-amber-500"
+              className="px-4 py-2 rounded-lg text-sm font-semibold bg-slate-900 text-white hover:bg-slate-800"
               onClick={() => {
                 const aliases = Object.entries(aliasEdits)
                   .filter(([, v]) => v)
@@ -301,11 +281,12 @@ function DashboardView({
             >
               Save All
             </button>
-            <span className="text-xs text-amber-700">Example: ZOMATO {'->'} ETERNAL, LTI {'->'} LTIM, HDFC {'->'} HDFCBANK</span>
+            <span className="text-xs text-slate-600">Example: ZOMATO {'->'} ETERNAL, LTI {'->'} LTIM, HDFC {'->'} HDFCBANK</span>
           </div>
         </div>
       )}
 
+      {showPastHolding && (
       <div className="text-right">
         <div className="text-xs uppercase tracking-widest text-slate-400">Financial Year</div>
         <select
@@ -329,6 +310,7 @@ function DashboardView({
           </span>
         </div>
       </div>
+      )}
     </div>
   );
 }

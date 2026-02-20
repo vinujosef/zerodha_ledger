@@ -1,6 +1,6 @@
-# 📈 Zerodha Investment Ledger
+# 📈 Investment Ledger
 
-Track Zerodha equity trades with FIFO accounting, contract note reconciliation, and a clean FY dashboard that matches Zerodha-style average costs.
+Track equity trades with FIFO accounting, contract note reconciliation, and a clean FY dashboard that matches Zerodha-style average costs.
 
 ## Quick Start
 1. Ensure Docker Desktop is running.
