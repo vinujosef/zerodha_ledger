@@ -31,6 +31,9 @@ from core import (
     detect_unmatched_sells,
     fy_label,
 )
+from tax import calculate_tax_report
+from tax.registry import supported_countries
+from tax.types import TaxReportRequest
 
 app = FastAPI()
 
@@ -1139,4 +1142,56 @@ def get_report_realized(fy: Optional[str] = None, db: Session = Depends(get_db))
         return {"fy": fy, "rows": rows}
     except Exception as e:
         _user_log(f"Report Realized Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/tax/countries")
+def get_tax_supported_countries():
+    return {"countries": supported_countries()}
+
+
+@app.post("/tax/report")
+def post_tax_report(payload: dict, db: Session = Depends(get_db)):
+    try:
+        country_code = str(payload.get("country_code") or "").upper()
+        tax_year_raw = payload.get("tax_year")
+        if not country_code:
+            raise HTTPException(status_code=400, detail="country_code is required")
+        if tax_year_raw is None:
+            raise HTTPException(status_code=400, detail="tax_year is required")
+        try:
+            tax_year = int(tax_year_raw)
+        except Exception:
+            raise HTTPException(status_code=400, detail="tax_year must be an integer")
+        if tax_year < 1900 or tax_year > 2100:
+            raise HTTPException(status_code=400, detail="tax_year must be between 1900 and 2100")
+
+        req = TaxReportRequest(
+            country_code=country_code,
+            tax_year=tax_year,
+            method_mode=str(payload.get("method_mode") or "auto_best_per_sale"),
+            prior_loss_carryforward=float(payload.get("prior_loss_carryforward") or 0.0),
+            include_rows=bool(payload.get("include_rows", True)),
+            base_currency=str(payload.get("base_currency") or "EUR"),
+        )
+
+        trades_df = pd.read_sql(db.query(Trade).statement, db.bind)
+        notes_df = pd.read_sql(db.query(ContractNote).statement, db.bind)
+        corporate_actions_df = _load_corporate_actions_df(db)
+        alias_map = _load_symbol_alias_map(db)
+        trades_df = _apply_aliases_to_trades_df(trades_df, alias_map)
+
+        result = calculate_tax_report(
+            request=req,
+            trades_df=trades_df,
+            notes_df=notes_df,
+            corporate_actions_df=corporate_actions_df,
+        )
+        return result
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        _user_log(f"Tax Report Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
