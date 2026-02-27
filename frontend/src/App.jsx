@@ -227,8 +227,7 @@ function App() {
     fetchSummary();
     fetchRealized();
     fetchTaxCountries();
-    fetchTaxReport({ countryCode: 'FI', taxYear: new Date().getFullYear() });
-  }, [fetchTaxCountries, fetchTaxReport]);
+  }, [fetchTaxCountries]);
 
   const totals = (data.holdings || []).reduce(
     (acc, h) => {
