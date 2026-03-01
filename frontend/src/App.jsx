@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import axios from 'axios';
 import DataImportView from './views/DataImportView';
 import DashboardView from './views/DashboardView';
@@ -239,14 +239,6 @@ function App() {
   );
   const totalPnl = totals.current - totals.invested;
   const totalPnlPct = totals.invested > 0 ? (totalPnl / totals.invested) * 100 : 0;
-  const dashboardSectionLabelMap = {
-    'current-holdings': 'Current Holdings',
-    'past-holding': 'Past Holdings',
-    'net-worth': 'Net Worth Over Time',
-    charges: 'Charges Paid by Financial Year',
-    'tax-report': 'Tax Report by Country',
-  };
-
   useEffect(() => {
     const onDocClick = (event) => {
       if (!dashboardMenuRef.current) return;
@@ -393,10 +385,6 @@ function App() {
               data={data}
               summary={summary}
               realized={realized}
-              fy={fy}
-              setFy={setFy}
-              fetchDashboard={fetchDashboard}
-              fetchRealized={fetchRealized}
               aliasEdits={aliasEdits}
               setAliasEdits={setAliasEdits}
               saveAliases={saveAliases}
